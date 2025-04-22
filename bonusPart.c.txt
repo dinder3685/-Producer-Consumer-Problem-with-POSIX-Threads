@@ -1,0 +1,224 @@
+/*
+
+
+Producer-Consumer Problem Solution with RTOS
+Below is an implementation of the producer-consumer pattern using an RTOS with mutex and condition variables to handle synchronization between the tasks.
+
+
+Race Condition Explanation and Solution
+Race Condition Scenario
+A race condition could occur in this implementation if proper synchronization mechanisms weren't used. For example:
+
+Without mutex: Both tasks could access the queue simultaneously, leading to:
+
+The producer could be updating the tail while the consumer is reading the head
+
+The count variable could be corrupted by simultaneous updates
+
+The head/tail pointers could become inconsistent
+
+Without condition variables:
+
+The producer might try to add to a full queue
+
+The consumer might try to read from an empty queue
+
+Tasks would need to busy-wait, wasting CPU cycles
+
+Solution Implemented
+The solution uses two synchronization mechanisms:
+
+Mutex (queue_mutex):
+
+Ensures exclusive access to the shared queue
+
+Protects all queue operations (enqueue/dequeue) and modifications to queue state
+
+Condition Variables (implemented with Event Groups):
+
+QUEUE_NOT_FULL_BIT: Signals when there's space in the queue (producer waits for this)
+
+QUEUE_NOT_EMPTY_BIT: Signals when there's data in the queue (consumer waits for this)
+
+Tasks wait for these conditions before proceeding
+
+Conditions are updated after each queue operation
+
+Key Synchronization Points
+Producer:
+
+Waits for QUEUE_NOT_FULL_BIT before attempting to add data
+
+Takes mutex before queue access
+
+Updates condition bits after modifying queue
+
+Releases mutex when done
+
+Consumer:
+
+Waits for QUEUE_NOT_EMPTY_BIT before attempting to read data
+
+Takes mutex before queue access
+
+Updates condition bits after modifying queue
+
+Releases mutex when done
+
+This implementation ensures thread-safe access to the shared queue while efficiently managing task synchronization through condition variables.
+
+
+
+*/
+#include <stdio.h>
+#include <stdint.h>
+#include <stdbool.h>
+#include <pthread.h>
+#include <unistd.h> // for sleep function
+
+#define QUEUE_SIZE 10
+#define PRODUCER_DELAY_MS 500
+#define CONSUMER_DELAY_MS 1000
+
+// Circular queue structure
+typedef struct {
+    int data[QUEUE_SIZE];  // Buffer to store data
+    int head;              // Index of oldest element
+    int tail;              // Index where next element will be added
+    int count;             // Current number of elements
+} circular_queue_t;
+
+// Global variables
+circular_queue_t sensor_queue;
+pthread_mutex_t queue_mutex = PTHREAD_MUTEX_INITIALIZER;  // Mutex for thread synchronization
+pthread_cond_t not_full = PTHREAD_COND_INITIALIZER;       // Condition: queue not full
+pthread_cond_t not_empty = PTHREAD_COND_INITIALIZER;      // Condition: queue not empty
+
+// Initialize the queue
+void init_queue(circular_queue_t *q) {
+    q->head = 0;
+    q->tail = 0;
+    q->count = 0;
+}
+
+// Check if queue is empty
+bool is_empty(circular_queue_t *q) {
+    return q->count == 0;
+}
+
+// Check if queue is full
+bool is_full(circular_queue_t *q) {
+    return q->count == QUEUE_SIZE;
+}
+
+// Add item to queue (returns true on success)
+bool enqueue(circular_queue_t *q, int value) {
+    if (is_full(q)) {
+        return false;
+    }
+    q->data[q->tail] = value;
+    q->tail = (q->tail + 1) % QUEUE_SIZE;  // Wrap around if needed
+    q->count++;
+    return true;
+}
+
+// Remove item from queue (returns true on success)
+bool dequeue(circular_queue_t *q, int *value) {
+    if (is_empty(q)) {
+        return false;
+    }
+    *value = q->data[q->head];
+    q->head = (q->head + 1) % QUEUE_SIZE;  // Wrap around if needed
+    q->count--;
+    return true;
+}
+
+// Producer thread function
+void *producer_thread(void *arg) {
+    int sensor_value = 0;
+    
+    while (1) {
+        // Simulate sensor data generation
+        sensor_value = rand() % 100;
+        
+        // Lock mutex before accessing shared queue
+        pthread_mutex_lock(&queue_mutex);
+        
+        // Wait while queue is full (spurious wakeups handled by while loop)
+        while (is_full(&sensor_queue)) {
+            pthread_cond_wait(&not_full, &queue_mutex);
+        }
+        
+        // Add data to queue
+        if (!enqueue(&sensor_queue, sensor_value)) {
+            printf("Producer error: Failed to add to queue despite condition\n");
+        } else {
+            printf("Producer added: %d (Count: %d)\n", sensor_value, sensor_queue.count);
+        }
+        
+        // Signal consumer that queue is no longer empty
+        pthread_cond_signal(&not_empty);
+        
+        // Unlock mutex
+        pthread_mutex_unlock(&queue_mutex);
+        
+        // Simulate processing delay
+        usleep(PRODUCER_DELAY_MS * 1000);
+    }
+    return NULL;
+}
+
+// Consumer thread function
+void *consumer_thread(void *arg) {
+    int received_value;
+    
+    while (1) {
+        // Lock mutex before accessing shared queue
+        pthread_mutex_lock(&queue_mutex);
+        
+        // Wait while queue is empty (spurious wakeups handled by while loop)
+        while (is_empty(&sensor_queue)) {
+            pthread_cond_wait(&not_empty, &queue_mutex);
+        }
+        
+        // Remove data from queue
+        if (!dequeue(&sensor_queue, &received_value)) {
+            printf("Consumer error: Failed to read from queue despite condition\n");
+        } else {
+            printf("Consumer read: %d (Count: %d)\n", received_value, sensor_queue.count);
+            
+            // Simulate data filtering
+            float filtered_value = received_value * 0.9;
+            printf("Filtered value: %.2f\n", filtered_value);
+        }
+        
+        // Signal producer that queue is no longer full
+        pthread_cond_signal(&not_full);
+        
+        // Unlock mutex
+        pthread_mutex_unlock(&queue_mutex);
+        
+        // Simulate processing delay
+        usleep(CONSUMER_DELAY_MS * 1000);
+    }
+    return NULL;
+}
+
+int main() {
+    pthread_t producer, consumer;
+    
+    // Initialize queue
+    init_queue(&sensor_queue);
+    
+    // Create producer and consumer threads
+    pthread_create(&producer, NULL, producer_thread, NULL);
+    pthread_create(&consumer, NULL, consumer_thread, NULL);
+    
+    printf("Producer-Consumer threads started\n");
+    
+    // Wait for threads to complete (they run indefinitely in this example)
+    pthread_join(producer, NULL);
+    pthread_join(consumer, NULL);
+    
+    return 0;
+}
